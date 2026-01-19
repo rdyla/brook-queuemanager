@@ -1,5 +1,5 @@
 name = "brook-queuemanager"
-main = "src/index.ts"
+main = "worker/src/index.ts"
 compatibility_date = "2026-01-01"
 
 [vars]
