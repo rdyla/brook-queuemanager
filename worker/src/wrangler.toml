@@ -1,0 +1,9 @@
+name = "brook-queuemanager"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[vars]
+# ZOOM_ACCOUNT_ID = "..."
+# ZOOM_CLIENT_ID = "..."
+# ZOOM_CLIENT_SECRET = "..."
+# ADMIN_API_KEY = "optional"
