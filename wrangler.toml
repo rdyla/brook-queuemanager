@@ -7,3 +7,12 @@ ZOOM_ACCOUNT_ID = "HSo9AYLTQ-mxFMUQg3hn7w"
 ZOOM_CLIENT_ID = "pUWJUWf1SlypIAQZ83Gm8A"
 # ZOOM_CLIENT_SECRET = "..."
 # ADMIN_API_KEY = "optional"
+
+[assets]
+directory = "./web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[build]
+command = "bun --cwd web install && bun --cwd web run build"
+
