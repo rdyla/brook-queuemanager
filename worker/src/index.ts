@@ -340,7 +340,13 @@ export default {
     }
 
     // UI assets (SPA fallback allowed here)
-    return withCors(req, env.ASSETS.fetch(req));
+    const res = await env.ASSETS.fetch(req);
+    const h = new Headers(res.headers);
+    if ((h.get("content-type") || "").includes("text/html")) {
+      h.set("cache-control", "no-store");
+    }
+    return withCors(req, new Response(res.body, { ...res, headers: h }));
+
   },
 };
 
