@@ -1,8 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { bulkCreateFromCsv, createQueue, deleteQueue, getQueue, listQueues, patchQueue } from "./api/client";
+import {
+  bulkCreateFromCsv,
+  createQueue,
+  deleteQueue,
+  getQueue,
+  listQueues,
+  patchQueue,
+  listQueueTemplates,
+  batchCreateQueues,
+} from "./api/client";
 
 
 type Queue = any;
+type QueueTemplate = any;
+
+function pickTemplatesFromResponse(res: any): QueueTemplate[] {
+  // tolerate shapes
+  const data = res?.data?.queue_templates || res?.data?.data?.queue_templates || res?.queue_templates || [];
+  return Array.isArray(data) ? data : [];
+}
+
 
 function prettyJson(x: any) {
   return JSON.stringify(x, null, 2);
@@ -230,28 +247,10 @@ function toNumberOrUndef(s: string) {
 }
 
 function csvRowToCreatePayload(r: Record<string, string>) {
-  const payload: any = {
+  return {
     queue_name: r.queue_name || r.name || "",
     queue_description: r.queue_description || r.description || "",
   };
-
-  // channel types
-  const ch = (r.channel_types || r.channels || "").trim();
-  if (ch) payload.channel_types = ch.split("|").map((x) => x.trim()).filter(Boolean);
-
-  // common numeric fields
-  const max_wait_time = toNumberOrUndef(r.max_wait_time);
-  const wrap_up_time = toNumberOrUndef(r.wrap_up_time);
-  const max_engagement_in_queue = toNumberOrUndef(r.max_engagement_in_queue);
-
-  if (max_wait_time !== undefined) payload.max_wait_time = max_wait_time;
-  if (wrap_up_time !== undefined) payload.wrap_up_time = wrap_up_time;
-  if (max_engagement_in_queue !== undefined) payload.max_engagement_in_queue = max_engagement_in_queue;
-
-  // Add more mappings over time as you learn tenant needs.
-  // For any "extra_*" columns, we can pass them directly if you want.
-
-  return payload;
 }
 
 /** ---------- Simple Modal ---------- */
@@ -331,12 +330,10 @@ function createQueueTemplate() {
 }
 
 function sampleCsvTemplate() {
-  // “Potentially include” is broad; this includes common + safe fields.
-  // You can keep extending as you confirm fields supported in your tenant.
   return [
-    "queue_name,queue_description,channel_types,max_wait_time,wrap_up_time,max_engagement_in_queue",
-    "Example Voice Queue,Created from CSV,voice,300,15,1",
-    "Example Multi-Channel,Voice+Chat queue,voice|chat,240,10,2",
+    "queue_name,queue_description",
+    "Example Voice Queue,Created from template batch",
+    "Example Queue 2,Another queue created from template batch",
   ].join("\n");
 }
 
@@ -374,6 +371,37 @@ export default function App() {
   const [bulkPayloads, setBulkPayloads] = useState<any[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<string>("");
+    // Templates (for batch create)
+  const [templates, setTemplates] = useState<QueueTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+
+  async function loadTemplates() {
+    setTemplatesLoading(true);
+    try {
+      const res = await listQueueTemplates({ page_size: "200" });
+      if (!res?.ok) throw new Error(res?.message || res?.data?.message || "Failed to load templates");
+      const items = pickTemplatesFromResponse(res);
+      setTemplates(items);
+
+      // Auto-pick first active template if none selected yet
+      if (!selectedTemplateId && items.length) {
+        const preferred = items.find((t: any) => t.template_status === "active") || items[0];
+        setSelectedTemplateId(String(preferred.template_id || ""));
+      }
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }
+
+    useEffect(() => {
+    if (activeTab === "bulk" && !templatesLoading && templates.length === 0) {
+      loadTemplates();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   async function refresh() {
     setLoading(true);
@@ -564,10 +592,27 @@ export default function App() {
     setBulkResult("");
     setPatchResult("");
 
+    if (!selectedTemplateId) {
+      setErr("Please select a template before creating.");
+      return;
+    }
+
+    // Only send valid queue rows (must have queue_name)
+    const queuesToCreate = bulkPayloads.filter((p) => p?.queue_name);
+    if (!queuesToCreate.length) {
+      setErr("No valid rows to create (all rows are missing queue_name).");
+      return;
+    }
+
     setBulkBusy(true);
     try {
-      const res = await bulkCreateFromCsv(csvText);
+      const res = await batchCreateQueues({
+        template_id: selectedTemplateId,
+        queues: queuesToCreate,
+      });
+
       setBulkResult(prettyJson(res));
+
       if (res?.ok) {
         setBulkPreviewOpen(false);
         setActiveTab("list");
@@ -579,6 +624,7 @@ export default function App() {
       setBulkBusy(false);
     }
   }
+
 
   const tabBtn = (label: string, tab: "list" | "create" | "bulk") => (
     <button onClick={() => setActiveTab(tab)} disabled={activeTab === tab}>
@@ -678,8 +724,44 @@ export default function App() {
         <div style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 800, marginBottom: 8 }}>Bulk Create from CSV</div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
-            Paste CSV below. We’ll preview parsed queues in a modal before sending to the API.
+            Paste CSV below. We’ll preview parsed queues before sending to the API.
           </div>
+
+          <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              Select a queue template. The template controls channel + defaults; CSV only provides queue name/description.
+            </div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", minWidth: 520 }}
+                disabled={templatesLoading}
+              >
+                <option value="">
+                  {templatesLoading ? "Loading templates…" : templates.length ? "Select a template…" : "No templates found"}
+                </option>
+
+                {templates.map((t: any) => {
+                  const id = String(t.template_id || "");
+                  const label = `${t.template_name || "(no name)"} — ${t.channel || "?"} — ${t.template_status || "?"}`;
+                  const desc = t.template_description ? ` (${t.template_description})` : "";
+                  return (
+                    <option key={id} value={id}>
+                      {label}
+                      {desc}
+                    </option>
+                  );
+                })}
+              </select>
+
+              <button onClick={loadTemplates} disabled={templatesLoading}>
+                {templatesLoading ? "Refreshing…" : "Refresh Templates"}
+              </button>
+            </div>
+          </div>
+
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
             <button onClick={() => setCsvText(sampleCsvTemplate())}>Insert Sample CSV</button>
@@ -745,7 +827,7 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Edit the full object (from GET). We’ll compute a diff and PATCH only the changes.
+              Full queue object (from GET /contactcenter/queue/:queueid). We’ll compute a diff and PATCH only the changes.
             </div>
 
             <textarea
@@ -815,7 +897,7 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Changes (git-style diff):</div>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>Changes :</div>
                 <DiffBlock
                   lines={collectDiffLines(
                     stripReadOnly(originalQueue),
@@ -897,7 +979,7 @@ export default function App() {
                   opacity: bulkBusy ? 0.8 : 1,
                 }}
               >
-                {bulkBusy ? "Creating…" : `Confirm Create (${bulkPayloads.length})`}
+                {bulkBusy ? "Creating…" : `Confirm Create (${bulkPayloads.filter(p => p?.queue_name).length})`}
               </button>
             </>
           }
@@ -907,17 +989,18 @@ export default function App() {
               Preview of parsed rows (green = ready, red = missing queue_name).
             </div>
 
+           <div style={{ fontSize: 12, opacity: 0.8 }}>
+              <b>Template:</b>{" "}
+              {templates.find((t: any) => String(t.template_id) === String(selectedTemplateId))?.template_name || selectedTemplateId || "(none)"}
+            </div>
+
             <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
               <table cellPadding={8} style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ textAlign: "left", borderBottom: "1px solid #eee", background: "#fafafa" }}>
                     <th style={{ width: 40 }}>#</th>
-                    <th style={{ width: 260 }}>queue_name</th>
+                    <th style={{ width: 360 }}>queue_name</th>
                     <th>queue_description</th>
-                    <th style={{ width: 180 }}>channel_types</th>
-                    <th style={{ width: 140 }}>max_wait_time</th>
-                    <th style={{ width: 120 }}>wrap_up_time</th>
-                    <th style={{ width: 200 }}>max_engagement_in_queue</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -928,14 +1011,11 @@ export default function App() {
                         <td>{idx + 1}</td>
                         <td style={{ fontWeight: 700 }}>{p.queue_name || "(missing)"}</td>
                         <td>{p.queue_description || ""}</td>
-                        <td>{Array.isArray(p.channel_types) ? p.channel_types.join("|") : ""}</td>
-                        <td>{p.max_wait_time ?? ""}</td>
-                        <td>{p.wrap_up_time ?? ""}</td>
-                        <td>{p.max_engagement_in_queue ?? ""}</td>
                       </tr>
                     );
                   })}
                 </tbody>
+
               </table>
             </div>
 

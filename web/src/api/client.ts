@@ -57,3 +57,21 @@ export async function deleteQueue(queueId: string) {
   });
   return await res.json();
 }
+
+export async function listQueueTemplates(params: Record<string, string> = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`${API_BASE}/api/queue-templates${qs ? `?${qs}` : ""}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  return await res.json();
+}
+
+export async function batchCreateQueues(payload: { template_id: string; queues: any[] }) {
+  const res = await fetch(`${API_BASE}/api/queues/batch`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(payload),
+  });
+  return await res.json();
+}

@@ -222,6 +222,46 @@ async function handlePatchQueue(req: Request, env: Env, queueId: string) {
   return json({ ok: r.ok, status: r.status, data: r.body }, { status: r.ok ? 200 : r.status });
 }
 
+async function handleListQueueTemplates(req: Request, env: Env) {
+  const url = new URL(req.url);
+  const qs = new URLSearchParams();
+
+  // Optional pass-through paging / filtering (if Zoom supports)
+  for (const k of ["page_size", "next_page_token", "channel", "template_type", "template_status"]) {
+    const v = url.searchParams.get(k);
+    if (v) qs.set(k, v);
+  }
+
+  const path = `/contact_center/queue_templates${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const r = await zoomFetch(env, path, { method: "GET" });
+
+  // Optionally trim fields here, but I'd return raw and let UI pick fields.
+  return json({ ok: r.ok, status: r.status, data: r.body }, { status: r.ok ? 200 : r.status });
+}
+
+async function handleBatchCreateQueues(req: Request, env: Env) {
+  const body = await readJson(req);
+  if (!body || typeof body !== "object") return badRequest("Expected JSON body.");
+
+  const template_id = (body as any).template_id;
+  const queues = (body as any).queues;
+
+  if (!template_id || typeof template_id !== "string") return badRequest("Missing template_id (string).");
+  if (!Array.isArray(queues) || queues.length < 1) return badRequest("Missing queues (array).");
+
+  // (Optional) minimal validation
+  for (let i = 0; i < queues.length; i++) {
+    if (!queues[i]?.queue_name) return badRequest(`queues[${i}].queue_name is required`);
+  }
+
+  const r = await zoomFetch(env, `/contact_center/queues/batch`, {
+    method: "POST",
+    body: JSON.stringify({ template_id, queues }),
+  });
+
+  return json({ ok: r.ok, status: r.status, data: r.body }, { status: r.ok ? 200 : r.status });
+}
+
 async function handleBulkCreate(req: Request, env: Env) {
   const ct = req.headers.get("content-type") || "";
   let csvText = "";
@@ -257,6 +297,8 @@ async function handleBulkCreate(req: Request, env: Env) {
 
     return { idx, payload };
   });
+
+
 
   // Throttle to be nice to Zoom rate limits (and avoid bursts).
   const concurrency = 4;
@@ -318,6 +360,14 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
 
   if (url.pathname === "/api/queues/bulk" && req.method === "POST") {
     return await handleBulkCreate(req, env);
+  }
+
+  if (url.pathname === "/api/queue-templates" && req.method === "GET") {
+  return await handleListQueueTemplates(req, env);
+  }
+
+  if (url.pathname === "/api/queues/batch" && req.method === "POST") {
+    return await handleBatchCreateQueues(req, env);
   }
 
   const mGet = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
