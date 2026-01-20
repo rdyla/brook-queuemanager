@@ -160,8 +160,9 @@ function deepDiff(original: any, edited: any): any {
 }
 
 // Common read-only keys: strip from BOTH sides before diffing so they never appear in patch.
-function stripReadOnly(obj: any) {
+function stripReadOnly(obj: any): any {
   if (!obj || typeof obj !== "object") return obj;
+
   const deny = new Set([
     "queue_id",
     "id",
@@ -181,6 +182,7 @@ function stripReadOnly(obj: any) {
   }
   return out;
 }
+
 
 /** ---------- CSV helpers (client-side preview) ---------- */
 function parseCsv(text: string): Record<string, string>[] {
