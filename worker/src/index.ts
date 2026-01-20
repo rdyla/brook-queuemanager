@@ -1,4 +1,5 @@
 export interface Env {
+  ASSETS: { fetch: (req: Request) => Promise<Response>; }
   ZOOM_ACCOUNT_ID: string;
   ZOOM_CLIENT_ID: string;
   ZOOM_CLIENT_SECRET: string;
@@ -290,7 +291,7 @@ async function handleBulkCreate(req: Request, env: Env) {
   );
 }
 
-  async function handleApi(req: Request, env: Env): Promise<Response> {
+async function handleApi(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
 
   if (url.pathname === "/api/queues" && req.method === "GET") {
@@ -314,37 +315,39 @@ async function handleBulkCreate(req: Request, env: Env) {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    // Preflight
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders(req) });
+    }
+
     try {
       const url = new URL(req.url);
 
-      /* ---------------- HEALTH ---------------- */
+      // Health
       if (url.pathname === "/health") {
-        return new Response("OK", { status: 200 });
+        return withCors(req, new Response("OK", { status: 200 }));
       }
 
-      /* ---------------- API ---------------- */
+      // API
       if (url.pathname.startsWith("/api/")) {
-        return await handleApi(req, env); // <-- MUST return here
+        if (!requireApiKey(req, env)) return withCors(req, unauthorized());
+        return withCors(req, handleApi(req, env));
       }
 
-      /* ---------------- UI (STATIC ASSETS) ---------------- */
-      return await env.ASSETS.fetch(req);
+      // UI assets
+      return withCors(req, env.ASSETS.fetch(req));
     } catch (e: any) {
-      return new Response(
-        JSON.stringify(
-          {
-            ok: false,
-            error: "worker_exception",
-            message: e?.message || String(e),
-          },
-          null,
-          2
+      return withCors(
+        req,
+        new Response(
+          JSON.stringify({ ok: false, error: "worker_exception", message: e?.message || String(e) }, null, 2),
+          { status: 500, headers: { "content-type": "application/json" } },
         ),
-        { status: 500, headers: { "content-type": "application/json" } }
       );
     }
   },
 };
+
 
 
 function withCors(req: Request, p: Promise<Response> | Response) {
