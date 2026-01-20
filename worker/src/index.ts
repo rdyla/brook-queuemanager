@@ -17,7 +17,10 @@ let cachedAccessTokenExpMs = 0;
 
 function json(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
-  headers.set("content-type", "application/json; charset=utf-8");
+    headers.set("content-type", "application/json; charset=utf-8");
+    headers.set("cache-control", "no-store");
+    headers.set("x-content-type-options", "nosniff");
+
   return new Response(JSON.stringify(data, null, 2), { ...init, headers });
 }
 
