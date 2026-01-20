@@ -15,6 +15,7 @@ function safeParseJson(text: string) {
   }
 }
 
+/** ---------- Diff helpers (git-style) ---------- */
 type DiffLine = { kind: "add" | "remove" | "ctx"; text: string };
 
 function isObj(x: any) {
@@ -27,10 +28,8 @@ function fmt(v: any) {
 }
 
 function collectDiffLines(a: any, b: any, path = ""): DiffLine[] {
-  // identical
   if (a === b) return [];
 
-  // arrays: replace if different
   if (Array.isArray(a) || Array.isArray(b)) {
     const as = JSON.stringify(a);
     const bs = JSON.stringify(b);
@@ -41,7 +40,6 @@ function collectDiffLines(a: any, b: any, path = ""): DiffLine[] {
     ];
   }
 
-  // primitives or null or type change: replace
   const aIsObj = isObj(a);
   const bIsObj = isObj(b);
   if (!aIsObj || !bIsObj) {
@@ -51,7 +49,6 @@ function collectDiffLines(a: any, b: any, path = ""): DiffLine[] {
     ];
   }
 
-  // objects: recurse
   const out: DiffLine[] = [];
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   const sorted = [...keys].sort();
@@ -110,16 +107,15 @@ function DiffBlock({ lines }: { lines: DiffLine[] }) {
   );
 }
 
+/** ---------- PATCH diff builder ---------- */
 // Deep diff: returns only changed keys, recursively.
-// - If no changes => {}
-// - Arrays: if changed in any way, replaces entire array (safe for PATCH payloads)
+// Arrays: if changed, replaces whole array (safe for PATCH).
 function deepDiff(original: any, edited: any): any {
   if (original === edited) return undefined;
 
   const oType = typeof original;
   const eType = typeof edited;
 
-  // If either is null/undefined or primitive or type changed: replace
   if (
     original == null ||
     edited == null ||
@@ -128,7 +124,6 @@ function deepDiff(original: any, edited: any): any {
     Array.isArray(original) ||
     Array.isArray(edited)
   ) {
-    // If both arrays, do "replace if different"
     if (Array.isArray(original) && Array.isArray(edited)) {
       if (JSON.stringify(original) === JSON.stringify(edited)) return undefined;
       return edited;
@@ -136,13 +131,10 @@ function deepDiff(original: any, edited: any): any {
     return edited;
   }
 
-  // Both objects
   const out: any = {};
   const keys = new Set([...Object.keys(original), ...Object.keys(edited)]);
   for (const k of keys) {
-    // If key removed in edited, skip by default (safer). If you want deletions, we can support nulling.
-    if (!(k in edited)) continue;
-
+    if (!(k in edited)) continue; // safer: no deletions by default
     const d = deepDiff(original[k], edited[k]);
     if (d !== undefined) out[k] = d;
   }
@@ -172,6 +164,96 @@ function stripReadOnly(obj: any) {
   return out;
 }
 
+/** ---------- CSV helpers (client-side preview) ---------- */
+function parseCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (c === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        inQuotes = false;
+      } else {
+        field += c;
+      }
+      continue;
+    }
+
+    if (c === '"') {
+      inQuotes = true;
+      continue;
+    }
+
+    if (c === ",") {
+      row.push(field.trim());
+      field = "";
+      continue;
+    }
+
+    if (c === "\n") {
+      row.push(field.trim());
+      field = "";
+      if (row.some((x) => x.length > 0)) rows.push(row);
+      row = [];
+      continue;
+    }
+
+    if (c === "\r") continue;
+    field += c;
+  }
+
+  row.push(field.trim());
+  if (row.some((x) => x.length > 0)) rows.push(row);
+
+  if (rows.length < 1) return [];
+  const headers = rows[0].map((h) => h.trim());
+  return rows.slice(1).map((r) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, idx) => (obj[h] = (r[idx] ?? "").trim()));
+    return obj;
+  });
+}
+
+function toNumberOrUndef(s: string) {
+  if (!s) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function csvRowToCreatePayload(r: Record<string, string>) {
+  const payload: any = {
+    queue_name: r.queue_name || r.name || "",
+    queue_description: r.queue_description || r.description || "",
+  };
+
+  // channel types
+  const ch = (r.channel_types || r.channels || "").trim();
+  if (ch) payload.channel_types = ch.split("|").map((x) => x.trim()).filter(Boolean);
+
+  // common numeric fields
+  const max_wait_time = toNumberOrUndef(r.max_wait_time);
+  const wrap_up_time = toNumberOrUndef(r.wrap_up_time);
+  const max_engagement_in_queue = toNumberOrUndef(r.max_engagement_in_queue);
+
+  if (max_wait_time !== undefined) payload.max_wait_time = max_wait_time;
+  if (wrap_up_time !== undefined) payload.wrap_up_time = wrap_up_time;
+  if (max_engagement_in_queue !== undefined) payload.max_engagement_in_queue = max_engagement_in_queue;
+
+  // Add more mappings over time as you learn tenant needs.
+  // For any "extra_*" columns, we can pass them directly if you want.
+
+  return payload;
+}
+
+/** ---------- Simple Modal ---------- */
 function Modal({
   title,
   children,
@@ -230,13 +312,40 @@ function Modal({
   );
 }
 
+/** ---------- Templates ---------- */
+function createQueueTemplate() {
+  return {
+    queue_name: "",
+    queue_description: "",
+    channel_types: ["voice"],
+
+    // Common knobs (may vary by tenant / API evolution):
+    max_wait_time: 300,
+    wrap_up_time: 15,
+    max_engagement_in_queue: 1,
+
+    // Add other fields as you discover them.
+    // Leaving extras here is fine—Zoom will reject unknown fields with a helpful error.
+  };
+}
+
+function sampleCsvTemplate() {
+  // “Potentially include” is broad; this includes common + safe fields.
+  // You can keep extending as you confirm fields supported in your tenant.
+  return [
+    "queue_name,queue_description,channel_types,max_wait_time,wrap_up_time,max_engagement_in_queue",
+    "Example Voice Queue,Created from CSV,voice,300,15,1",
+    "Example Multi-Channel,Voice+Chat queue,voice|chat,240,10,2",
+  ].join("\n");
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [queues, setQueues] = useState<Queue[]>([]);
   const [activeTab, setActiveTab] = useState<"list" | "create" | "bulk">("list");
 
-  // Edit modal state
+  /** ---- Edit modal state ---- */
   const [editing, setEditing] = useState<Queue | null>(null);
   const [originalQueue, setOriginalQueue] = useState<any>(null);
   const [editJsonText, setEditJsonText] = useState<string>("");
@@ -250,6 +359,20 @@ export default function App() {
 
   // Delete confirm
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+
+  /** ---- Create tab ---- */
+  const [createJsonText, setCreateJsonText] = useState(() => prettyJson(createQueueTemplate()));
+  const [createConfirmOpen, setCreateConfirmOpen] = useState(false);
+  const [createParsed, setCreateParsed] = useState<any>(null);
+  const [createBusy, setCreateBusy] = useState(false);
+
+  /** ---- Bulk tab ---- */
+  const [csvText, setCsvText] = useState(sampleCsvTemplate());
+  const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
+  const [bulkRows, setBulkRows] = useState<Record<string, string>[]>([]);
+  const [bulkPayloads, setBulkPayloads] = useState<any[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string>("");
 
   async function refresh() {
     setLoading(true);
@@ -279,11 +402,12 @@ export default function App() {
   function openEdit(q: Queue) {
     setEditing(q);
     setOriginalQueue(q);
-    setEditJsonText(prettyJson(q)); // show full GET payload
+    setEditJsonText(prettyJson(q)); // full GET payload
     setPatchResult("");
     setDeleteConfirmText("");
     setPatchConfirmOpen(false);
     setComputedPatch(null);
+    setEditedParsed(null);
   }
 
   function computePatchAndOpenConfirm() {
@@ -296,13 +420,12 @@ export default function App() {
       return;
     }
 
-    // Strip read-only keys before diff
     const o = stripReadOnly(originalQueue);
     const e = stripReadOnly(parsed.value);
 
     const d = deepDiff(o, e);
-    const patch = d ?? {}; // if undefined => no changes
-    
+    const patch = d ?? {};
+
     setComputedPatch(patch);
     setEditedParsed(parsed.value);
     setPatchConfirmOpen(true);
@@ -358,17 +481,102 @@ export default function App() {
     }
   }
 
+  /** ---------- Create flow ---------- */
+  function openCreateConfirm() {
+    setErr(null);
+    const parsed = safeParseJson(createJsonText);
+    if (!parsed.ok) {
+      setErr(parsed.error);
+      return;
+    }
+    setCreateParsed(parsed.value);
+    setCreateConfirmOpen(true);
+  }
+
+  async function confirmCreate() {
+    setErr(null);
+    setBulkResult("");
+    setPatchResult("");
+    if (!createParsed) {
+      setErr("Create payload missing.");
+      return;
+    }
+
+    setCreateBusy(true);
+    try {
+      const res = await createQueue(createParsed);
+      // show result in modal body (we’ll just reuse patchResult slot)
+      setPatchResult(prettyJson(res));
+      if (res?.ok) {
+        setCreateConfirmOpen(false);
+        setActiveTab("list");
+        await refresh();
+      }
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
+  /** ---------- Bulk flow ---------- */
+  function openBulkPreview() {
+    setErr(null);
+    setBulkResult("");
+
+    const rows = parseCsv(csvText);
+    if (!rows.length) {
+      setErr("CSV had no data rows.");
+      return;
+    }
+
+    const payloads = rows.map(csvRowToCreatePayload);
+    setBulkRows(rows);
+    setBulkPayloads(payloads);
+    setBulkPreviewOpen(true);
+  }
+
+  async function confirmBulk() {
+    setErr(null);
+    setBulkResult("");
+    setPatchResult("");
+
+    setBulkBusy(true);
+    try {
+      const res = await bulkCreateFromCsv(csvText);
+      setBulkResult(prettyJson(res));
+      if (res?.ok) {
+        setBulkPreviewOpen(false);
+        setActiveTab("list");
+        await refresh();
+      }
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  const tabBtn = (label: string, tab: "list" | "create" | "bulk") => (
+    <button onClick={() => setActiveTab(tab)} disabled={activeTab === tab}>
+      {label}
+    </button>
+  );
+
   return (
     <div style={{ fontFamily: "system-ui", padding: 20, maxWidth: 1200, margin: "0 auto" }}>
       <h1 style={{ margin: 0 }}>Brook Queue Manager</h1>
 
       <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={refresh} disabled={loading}>Refresh</button>
-        <button onClick={() => setActiveTab("list")} disabled={activeTab === "list"}>Queues</button>
+        {tabBtn("Queues", "list")}
+        {tabBtn("Create", "create")}
+        {tabBtn("Bulk CSV", "bulk")}
         {loading && <span>Loading…</span>}
         {err && <span style={{ color: "crimson" }}>{err}</span>}
       </div>
 
+      {/* ---------------- LIST TAB ---------------- */}
       {activeTab === "list" && (
         <div style={{ marginTop: 14 }}>
           <div style={{ opacity: 0.8, marginBottom: 8 }}>{sorted.length} queues</div>
@@ -393,12 +601,92 @@ export default function App() {
                   </td>
                 </tr>
               ))}
+              {!sorted.length && !loading && (
+                <tr>
+                  <td colSpan={4} style={{ opacity: 0.7 }}>No queues returned.</td>
+                </tr>
+              )}
             </tbody>
           </table>
+
+          {bulkResult && (
+            <pre style={{ marginTop: 12, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+              {bulkResult}
+            </pre>
+          )}
         </div>
       )}
 
-      {/* Edit Modal */}
+      {/* ---------------- CREATE TAB ---------------- */}
+      {activeTab === "create" && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>Create Queue (POST)</div>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
+            Edit the JSON payload. We’ll show a confirm modal before sending.
+          </div>
+
+          <textarea
+            value={createJsonText}
+            onChange={(e) => setCreateJsonText(e.target.value)}
+            spellCheck={false}
+            style={{ width: "100%", minHeight: 320, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+          />
+
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button onClick={() => setCreateJsonText(prettyJson(createQueueTemplate()))}>Reset Template</button>
+            <button
+              onClick={openCreateConfirm}
+              style={{ fontWeight: 900, background: "#0a7a2f", color: "white", border: "none", padding: "8px 12px", borderRadius: 8 }}
+            >
+              Review & Create…
+            </button>
+          </div>
+
+          {patchResult && (
+            <pre style={{ marginTop: 12, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+              {patchResult}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* ---------------- BULK TAB ---------------- */}
+      {activeTab === "bulk" && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>Bulk Create from CSV</div>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
+            Paste CSV below. We’ll preview parsed queues in a modal before sending to the API.
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <button onClick={() => setCsvText(sampleCsvTemplate())}>Insert Sample CSV</button>
+          </div>
+
+          <textarea
+            value={csvText}
+            onChange={(e) => setCsvText(e.target.value)}
+            spellCheck={false}
+            style={{ width: "100%", minHeight: 260, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+          />
+
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button
+              onClick={openBulkPreview}
+              style={{ fontWeight: 900, background: "#0a7a2f", color: "white", border: "none", padding: "8px 12px", borderRadius: 8 }}
+            >
+              Preview & Confirm…
+            </button>
+          </div>
+
+          {bulkResult && (
+            <pre style={{ marginTop: 12, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+              {bulkResult}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* ---------------- EDIT MODAL ---------------- */}
       {editing && (
         <Modal
           title={`Edit Queue: ${editing.queue_name || editing.name || ""}`}
@@ -407,10 +695,8 @@ export default function App() {
           footer={
             <>
               <button onClick={() => setEditing(null)}>Cancel</button>
-              <button
-                onClick={computePatchAndOpenConfirm}
-                style={{ fontWeight: 800 }}
-              >
+              <button onClick={() => setEditJsonText(prettyJson(originalQueue))}>Reset</button>
+              <button onClick={computePatchAndOpenConfirm} style={{ fontWeight: 900 }}>
                 Review Diff…
               </button>
               <button
@@ -456,7 +742,6 @@ export default function App() {
                 placeholder="DELETE"
                 style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd" }}
               />
-              <button onClick={() => setEditJsonText(prettyJson(originalQueue))}>Reset</button>
             </div>
 
             {patchResult && (
@@ -468,12 +753,12 @@ export default function App() {
         </Modal>
       )}
 
-      {/* Patch Diff Confirm Modal */}
+      {/* ---------------- PATCH CONFIRM MODAL ---------------- */}
       {patchConfirmOpen && editing && (
         <Modal
           title="Confirm PATCH (Diff Preview)"
           onClose={() => setPatchConfirmOpen(false)}
-          width={900}
+          width={980}
           footer={
             <>
               <button onClick={() => setPatchConfirmOpen(false)}>Back</button>
@@ -495,8 +780,8 @@ export default function App() {
             </>
           }
         >
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ opacity: 0.8 }}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ opacity: 0.85 }}>
               <div><b>Queue:</b> {editing.queue_name || editing.name || ""}</div>
               <div style={{ fontFamily: "monospace" }}><b>ID:</b> {String(editing.queue_id || editing.id)}</div>
             </div>
@@ -507,27 +792,141 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Changes (git-style diff):
-                </div>
-
+                <div style={{ fontSize: 12, opacity: 0.75 }}>Changes (git-style diff):</div>
                 <DiffBlock
-                    lines={collectDiffLines(
-                      stripReadOnly(originalQueue),
-                      stripReadOnly(editedParsed || {})
-                    
+                  lines={collectDiffLines(
+                    stripReadOnly(originalQueue),
+                    stripReadOnly(editedParsed || {})
                   )}
                 />
 
-                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>
-                  PATCH payload (what will be sent):
-                </div>
-
+                <div style={{ fontSize: 12, opacity: 0.75 }}>PATCH payload (what will be sent):</div>
                 <pre style={{ background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
                   {prettyJson(computedPatch)}
                 </pre>
               </>
+            )}
+          </div>
+        </Modal>
+      )}
 
+      {/* ---------------- CREATE CONFIRM MODAL ---------------- */}
+      {createConfirmOpen && (
+        <Modal
+          title="Confirm CREATE (POST)"
+          onClose={() => setCreateConfirmOpen(false)}
+          width={980}
+          footer={
+            <>
+              <button onClick={() => setCreateConfirmOpen(false)}>Back</button>
+              <button
+                onClick={confirmCreate}
+                disabled={createBusy}
+                style={{
+                  background: "#0a7a2f",
+                  color: "white",
+                  border: "none",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  fontWeight: 900,
+                  opacity: createBusy ? 0.8 : 1,
+                }}
+              >
+                {createBusy ? "Creating…" : "Confirm CREATE"}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>POST payload:</div>
+            <pre style={{ background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+              {prettyJson(createParsed)}
+            </pre>
+
+            {patchResult && (
+              <pre style={{ marginTop: 0, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+                {patchResult}
+              </pre>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {/* ---------------- BULK PREVIEW MODAL ---------------- */}
+      {bulkPreviewOpen && (
+        <Modal
+          title="Bulk Create Preview"
+          onClose={() => setBulkPreviewOpen(false)}
+          width={1100}
+          footer={
+            <>
+              <button onClick={() => setBulkPreviewOpen(false)}>Back</button>
+              <button
+                onClick={confirmBulk}
+                disabled={bulkBusy}
+                style={{
+                  background: "#0a7a2f",
+                  color: "white",
+                  border: "none",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  fontWeight: 900,
+                  opacity: bulkBusy ? 0.8 : 1,
+                }}
+              >
+                {bulkBusy ? "Creating…" : `Confirm Create (${bulkPayloads.length})`}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              Preview of parsed rows (green = ready, red = missing queue_name).
+            </div>
+
+            <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
+              <table cellPadding={8} style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: "1px solid #eee", background: "#fafafa" }}>
+                    <th style={{ width: 40 }}>#</th>
+                    <th style={{ width: 260 }}>queue_name</th>
+                    <th>queue_description</th>
+                    <th style={{ width: 180 }}>channel_types</th>
+                    <th style={{ width: 140 }}>max_wait_time</th>
+                    <th style={{ width: 120 }}>wrap_up_time</th>
+                    <th style={{ width: 200 }}>max_engagement_in_queue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkPayloads.map((p, idx) => {
+                    const ok = !!p.queue_name;
+                    return (
+                      <tr key={idx} style={{ borderBottom: "1px solid #f2f2f2", background: ok ? "#f4fbf6" : "#fff5f5" }}>
+                        <td>{idx + 1}</td>
+                        <td style={{ fontWeight: 700 }}>{p.queue_name || "(missing)"}</td>
+                        <td>{p.queue_description || ""}</td>
+                        <td>{Array.isArray(p.channel_types) ? p.channel_types.join("|") : ""}</td>
+                        <td>{p.max_wait_time ?? ""}</td>
+                        <td>{p.wrap_up_time ?? ""}</td>
+                        <td>{p.max_engagement_in_queue ?? ""}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <details>
+              <summary style={{ cursor: "pointer" }}>Show raw payloads</summary>
+              <pre style={{ marginTop: 10, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+                {prettyJson(bulkPayloads)}
+              </pre>
+            </details>
+
+            {bulkResult && (
+              <pre style={{ marginTop: 0, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+                {bulkResult}
+              </pre>
             )}
           </div>
         </Modal>
