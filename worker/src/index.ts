@@ -302,29 +302,29 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
     return await handleCreateQueue(req, env);
   }
 
+  if (url.pathname === "/api/queues/bulk" && req.method === "POST") {
+    return await handleBulkCreate(req, env);
+  }
+
   const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
   if (m && req.method === "PATCH") {
     return await handlePatchQueue(req, env, m[1]);
   }
 
-  if (url.pathname === "/api/queues/bulk" && req.method === "POST") {
-    return await handleBulkCreate(req, env);
-  }
-
   return json({ ok: false, error: "api_not_found", path: url.pathname }, { status: 404 });
 }
-
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-    if (url.pathname.startsWith("/api/")) {
-  return new Response(
-    JSON.stringify({ ok: true, api: true, path: url.pathname }, null, 2),
-    { status: 200, headers: { "content-type": "application/json" } }
-  );
+if (url.pathname.startsWith("/api/")) {
+  if (!requireApiKey(req, env)) return unauthorized();
+
+  // IMPORTANT: return real API routing
+  return withCors(req, handleApi(req, env));
 }
+
 
 
     // Preflight
