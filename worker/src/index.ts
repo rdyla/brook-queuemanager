@@ -17,12 +17,11 @@ let cachedAccessTokenExpMs = 0;
 
 function json(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
-    headers.set("content-type", "application/json; charset=utf-8");
-    headers.set("cache-control", "no-store");
-    headers.set("x-content-type-options", "nosniff");
-
+  headers.set("content-type", "application/json; charset=utf-8");
+  headers.set("cache-control", "no-store");          // <—
+  headers.set("x-content-type-options", "nosniff");  // <—
   return new Response(JSON.stringify(data, null, 2), { ...init, headers });
-}
+
 
 function badRequest(message: string, details?: unknown) {
   return json({ ok: false, error: "bad_request", message, details }, { status: 400 });
@@ -336,7 +335,8 @@ export default {
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders(req) });
       }
-      return withCors(req, new Response("OK", { status: 200 }));
+      return withCors(req, new Response("OK", { status: 200, headers: { "cache-control": "no-store" } }));
+
     }
 
     // UI assets (SPA fallback allowed here)
