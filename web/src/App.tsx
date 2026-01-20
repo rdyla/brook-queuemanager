@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { bulkCreateFromCsv, createQueue, deleteQueue, listQueues, patchQueue } from "./api/client";
+import { bulkCreateFromCsv, createQueue, deleteQueue, getQueue, listQueues, patchQueue } from "./api/client";
+
 
 type Queue = any;
 
@@ -399,16 +400,38 @@ export default function App() {
     );
   }, [queues]);
 
-  function openEdit(q: Queue) {
-    setEditing(q);
-    setOriginalQueue(q);
-    setEditJsonText(prettyJson(q)); // full GET payload
+  async function openEdit(q: Queue) {
+    setErr(null);
     setPatchResult("");
     setDeleteConfirmText("");
     setPatchConfirmOpen(false);
     setComputedPatch(null);
     setEditedParsed(null);
+
+    // Open modal immediately with what we have (fast UX)
+    setEditing(q);
+    setOriginalQueue(q);
+    setEditJsonText(prettyJson(q));
+
+    // Then fetch the full detail payload and re-seed
+    try {
+      const id = String(q.queue_id || q.id || "");
+      if (!id) throw new Error("Missing queue id");
+
+      const res = await getQueue(id);
+      if (!res?.ok) throw new Error(res?.message || res?.data?.message || "Failed to load queue details");
+
+      const full = res?.data?.data ?? res?.data ?? res; // tolerate shapes
+
+      setEditing(full);
+      setOriginalQueue(full);
+      setEditJsonText(prettyJson(full));
+    } catch (e: any) {
+      // keep modal open with list payload; just show error
+      setErr(e?.message || String(e));
+    }
   }
+
 
   function computePatchAndOpenConfirm() {
     if (!editing) return;

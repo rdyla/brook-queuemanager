@@ -14,6 +14,15 @@ export async function listQueues(params: Record<string, string>) {
   return await res.json();
 }
 
+// ✅ ADD THIS
+export async function getQueue(queueId: string) {
+  const res = await fetch(`${API_BASE}/api/queues/${encodeURIComponent(queueId)}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  return await res.json();
+}
+
 export async function createQueue(payload: any) {
   const res = await fetch(`${API_BASE}/api/queues`, {
     method: "POST",
@@ -37,13 +46,6 @@ export async function bulkCreateFromCsv(csv: string) {
     method: "POST",
     headers: { "content-type": "text/csv" },
     body: csv,
-  });
-  return await res.json();
-}
-
-export async function deleteQueue(queueId: string) {
-  const res = await fetch(`${API_BASE}/api/queues/${encodeURIComponent(queueId)}`, {
-    method: "DELETE",
   });
   return await res.json();
 }
