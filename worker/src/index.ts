@@ -326,16 +326,12 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
 
-  const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
-  if (m && req.method === "PATCH") {
-    return await handlePatchQueue(req, env, m[1]);
-  }
-  if (m && req.method === "DELETE") {
-    return await handleDeleteQueue(req, env, m[1]);
-  }
+const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
+  if (m && req.method === "GET")   return await handleGetQueue(req, env, m[1]);
+  if (m && req.method === "PATCH") return await handlePatchQueue(req, env, m[1]);
+  if (m && req.method === "DELETE") return await handleDeleteQueue(req, env, m[1]);
 
   return json({ ok: false, error: "api_not_found", path: url.pathname }, { status: 404 });
-
 }
 
 export default {

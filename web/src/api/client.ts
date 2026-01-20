@@ -49,3 +49,11 @@ export async function bulkCreateFromCsv(csv: string) {
   });
   return await res.json();
 }
+
+export async function deleteQueue(queueId: string) {
+  const res = await fetch(`${API_BASE}/api/queues/${encodeURIComponent(queueId)}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  return await res.json();
+}
