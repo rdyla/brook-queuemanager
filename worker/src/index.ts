@@ -39,7 +39,7 @@ function corsHeaders(req: Request) {
   const origin = req.headers.get("origin") || "*";
   return {
     "access-control-allow-origin": origin,
-    "access-control-allow-methods": "GET,POST,PATCH,OPTIONS",
+    "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "access-control-allow-headers": "content-type, authorization, x-admin-api-key",
     "access-control-allow-credentials": "true",
   };
@@ -205,6 +205,13 @@ async function handleCreateQueue(req: Request, env: Env) {
   return json({ ok: r.ok, status: r.status, data: r.body }, { status: r.ok ? 201 : r.status });
 }
 
+async function handleDeleteQueue(req: Request, env: Env, queueId: string) {
+  const r = await zoomFetch(env, `/contact_center/queues/${encodeURIComponent(queueId)}`, {
+    method: "DELETE",
+  });
+  return json({ ok: r.ok, status: r.status, data: r.body }, { status: r.ok ? 200 : r.status });
+}
+
 async function handlePatchQueue(req: Request, env: Env, queueId: string) {
   const body = await readJson(req);
   if (!body || typeof body !== "object") return badRequest("Expected JSON body.");
@@ -308,10 +315,13 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
     return await handleBulkCreate(req, env);
   }
 
-  const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
-  if (m && req.method === "PATCH") {
-    return await handlePatchQueue(req, env, m[1]);
-  }
+const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
+if (m && req.method === "PATCH") {
+  return await handlePatchQueue(req, env, m[1]);
+}
+if (m && req.method === "DELETE") {
+  return await handleDeleteQueue(req, env, m[1]);
+}
 
   return json({ ok: false, error: "api_not_found", path: url.pathname }, { status: 404 });
 
