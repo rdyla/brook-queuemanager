@@ -48,6 +48,8 @@ async function readJson(req: Request) {
   return await req.json();
 }
 
+
+
 /**
  * Minimal CSV parser with quoted-field support.
  * Good enough for admin CSV uploads without a library.
@@ -293,6 +295,19 @@ export default {
     // CORS preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
+    }
+
+    // Root page (nice sanity check)
+    if (url.pathname === "/") {
+      return new Response(
+        "brook-queuemanager worker is live. Try /health or /api/queues",
+        { headers: { "content-type": "text/plain; charset=utf-8" } },
+      );
+    }
+
+    // Health endpoint (for monitors)
+    if (url.pathname === "/health") {
+      return new Response("ok", { status: 200 });
     }
 
     if (!requireApiKey(req, env)) {
