@@ -296,6 +296,22 @@ export default {
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
     }
+    const url = new URL(req.url);
+    const path = url.pathname;
+
+    function maskPresent(v: unknown) {
+  return v ? "present" : "missing";
+}
+
+if (url.pathname === "/debug/env") {
+  return json({
+    ok: true,
+    ZOOM_ACCOUNT_ID: maskPresent(env.ZOOM_ACCOUNT_ID),
+    ZOOM_CLIENT_ID: maskPresent(env.ZOOM_CLIENT_ID),
+    ZOOM_CLIENT_SECRET: maskPresent(env.ZOOM_CLIENT_SECRET),
+  });
+}
+
 
     // Root page (nice sanity check)
     if (url.pathname === "/") {
@@ -314,8 +330,7 @@ export default {
       return new Response(null, { status: 401, headers: corsHeaders(req) });
     }
 
-    const url = new URL(req.url);
-    const path = url.pathname;
+
 
     // Serve a simple health check
     if (path === "/health") {
