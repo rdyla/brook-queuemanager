@@ -318,42 +318,27 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-if (url.pathname.startsWith("/api/")) {
-  if (!requireApiKey(req, env)) return unauthorized();
-
-  // IMPORTANT: return real API routing
-  return withCors(req, handleApi(req, env));
-}
-
-
-
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
     }
 
-    // Health (should NEVER serve SPA)
+    // Health
     if (url.pathname === "/health") {
-      return new Response("OK", { status: 200, headers: corsHeaders(req) });
+      return withCors(req, new Response("OK", { status: 200 }));
     }
 
-    // API namespace (should NEVER serve SPA)
+    // API
     if (url.pathname.startsWith("/api/")) {
-      if (!requireApiKey(req, env)) return unauthorized();
-      const r = await handleApi(req, env);
-      // add CORS to API responses
-      const h = new Headers(r.headers);
-      Object.entries(corsHeaders(req)).forEach(([k, v]) => h.set(k, v));
-      return new Response(r.body, { ...r, headers: h });
+      if (!requireApiKey(req, env)) return withCors(req, unauthorized());
+      return withCors(req, handleApi(req, env));
     }
 
-    // Everything else: UI assets (SPA fallback allowed here)
-    const res = await env.ASSETS.fetch(req);
-    const h = new Headers(res.headers);
-    Object.entries(corsHeaders(req)).forEach(([k, v]) => h.set(k, v));
-    return new Response(res.body, { ...res, headers: h });
+    // UI
+    return withCors(req, env.ASSETS.fetch(req));
   },
 };
+
 
 function withCors(req: Request, p: Promise<Response> | Response) {
   return Promise.resolve(p).then((res) => {
