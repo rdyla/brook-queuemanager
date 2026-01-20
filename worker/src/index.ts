@@ -312,33 +312,32 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
   return json({ ok: false, error: "api_not_found", path: url.pathname }, { status: 404 });
+
 }
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-    // Preflight
-    if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(req) });
-    }
-
-    // Health
-    if (url.pathname === "/health") {
-      return withCors(req, new Response("OK", { status: 200 }));
-    }
-
-    // API
+    // API always handled here, never by SPA assets
     if (url.pathname.startsWith("/api/")) {
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders(req) });
+      }
       if (!requireApiKey(req, env)) return withCors(req, unauthorized());
       return withCors(req, handleApi(req, env));
     }
 
-    // UI
-    const res = await env.ASSETS.fetch(req);
-    const h = new Headers(res.headers);
-    h.set("Cache-Control", "no-store");
-    return withCors(req, new Response(res.body, { ...res, headers: h }));
+    // Health
+    if (url.pathname === "/health") {
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders(req) });
+      }
+      return withCors(req, new Response("OK", { status: 200 }));
+    }
+
+    // UI assets (SPA fallback allowed here)
+    return withCors(req, env.ASSETS.fetch(req));
   },
 };
 
