@@ -335,10 +335,12 @@ export default {
     }
 
     // UI
-    return withCors(req, env.ASSETS.fetch(req));
+    const res = await env.ASSETS.fetch(req);
+    const h = new Headers(res.headers);
+    h.set("Cache-Control", "no-store");
+    return withCors(req, new Response(res.body, { ...res, headers: h }));
   },
 };
-
 
 function withCors(req: Request, p: Promise<Response> | Response) {
   return Promise.resolve(p).then((res) => {
