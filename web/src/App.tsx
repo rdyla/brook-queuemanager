@@ -15,11 +15,142 @@ function safeParseJson(text: string) {
   }
 }
 
-/**
- * Remove a few common read-only/noisy keys to reduce PATCH failures.
- * You can expand this list as you discover what Zoom rejects.
- */
-function stripReadOnlyKeys(obj: any) {
+type DiffLine = { kind: "add" | "remove" | "ctx"; text: string };
+
+function isObj(x: any) {
+  return x && typeof x === "object" && !Array.isArray(x);
+}
+
+function fmt(v: any) {
+  if (typeof v === "string") return JSON.stringify(v);
+  return JSON.stringify(v);
+}
+
+function collectDiffLines(a: any, b: any, path = ""): DiffLine[] {
+  // identical
+  if (a === b) return [];
+
+  // arrays: replace if different
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const as = JSON.stringify(a);
+    const bs = JSON.stringify(b);
+    if (as === bs) return [];
+    return [
+      { kind: "remove", text: `- ${path || "<root>"}: ${as}` },
+      { kind: "add", text: `+ ${path || "<root>"}: ${bs}` },
+    ];
+  }
+
+  // primitives or null or type change: replace
+  const aIsObj = isObj(a);
+  const bIsObj = isObj(b);
+  if (!aIsObj || !bIsObj) {
+    return [
+      { kind: "remove", text: `- ${path || "<root>"}: ${fmt(a)}` },
+      { kind: "add", text: `+ ${path || "<root>"}: ${fmt(b)}` },
+    ];
+  }
+
+  // objects: recurse
+  const out: DiffLine[] = [];
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const sorted = [...keys].sort();
+
+  for (const k of sorted) {
+    const nextPath = path ? `${path}.${k}` : k;
+
+    if (!(k in b)) {
+      out.push({ kind: "remove", text: `- ${nextPath}: ${fmt(a[k])}` });
+      continue;
+    }
+    if (!(k in a)) {
+      out.push({ kind: "add", text: `+ ${nextPath}: ${fmt(b[k])}` });
+      continue;
+    }
+
+    out.push(...collectDiffLines(a[k], b[k], nextPath));
+  }
+
+  return out;
+}
+
+function DiffBlock({ lines }: { lines: DiffLine[] }) {
+  return (
+    <pre
+      style={{
+        margin: 0,
+        background: "#f6f8fa",
+        padding: 12,
+        borderRadius: 12,
+        overflow: "auto",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: 12,
+        lineHeight: 1.5,
+        border: "1px solid #e5e7eb",
+      }}
+    >
+      {lines.length ? (
+        lines.map((l, i) => {
+          const style =
+            l.kind === "add"
+              ? { color: "#0a7a2f" }
+              : l.kind === "remove"
+              ? { color: "#b00020" }
+              : { opacity: 0.75 };
+          return (
+            <div key={i} style={style}>
+              {l.text}
+            </div>
+          );
+        })
+      ) : (
+        <div style={{ opacity: 0.75 }}>(no changes)</div>
+      )}
+    </pre>
+  );
+}
+
+// Deep diff: returns only changed keys, recursively.
+// - If no changes => {}
+// - Arrays: if changed in any way, replaces entire array (safe for PATCH payloads)
+function deepDiff(original: any, edited: any): any {
+  if (original === edited) return undefined;
+
+  const oType = typeof original;
+  const eType = typeof edited;
+
+  // If either is null/undefined or primitive or type changed: replace
+  if (
+    original == null ||
+    edited == null ||
+    oType !== "object" ||
+    eType !== "object" ||
+    Array.isArray(original) ||
+    Array.isArray(edited)
+  ) {
+    // If both arrays, do "replace if different"
+    if (Array.isArray(original) && Array.isArray(edited)) {
+      if (JSON.stringify(original) === JSON.stringify(edited)) return undefined;
+      return edited;
+    }
+    return edited;
+  }
+
+  // Both objects
+  const out: any = {};
+  const keys = new Set([...Object.keys(original), ...Object.keys(edited)]);
+  for (const k of keys) {
+    // If key removed in edited, skip by default (safer). If you want deletions, we can support nulling.
+    if (!(k in edited)) continue;
+
+    const d = deepDiff(original[k], edited[k]);
+    if (d !== undefined) out[k] = d;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// Common read-only keys: strip from BOTH sides before diffing so they never appear in patch.
+function stripReadOnly(obj: any) {
   if (!obj || typeof obj !== "object") return obj;
   const deny = new Set([
     "queue_id",
@@ -30,115 +161,15 @@ function stripReadOnlyKeys(obj: any) {
     "total_records",
     "next_page_token",
   ]);
-  const out: any = Array.isArray(obj) ? [] : {};
+
+  if (Array.isArray(obj)) return obj.map(stripReadOnly);
+
+  const out: any = {};
   for (const [k, v] of Object.entries(obj)) {
     if (deny.has(k)) continue;
-    out[k] = v;
+    out[k] = stripReadOnly(v);
   }
   return out;
-}
-
-/** Minimal CSV parser for UI preview (matches worker behavior closely). */
-function parseCsvUi(text: string): Record<string, string>[] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-
-    if (inQuotes) {
-      if (c === '"' && next === '"') {
-        field += '"';
-        i++;
-      } else if (c === '"') {
-        inQuotes = false;
-      } else {
-        field += c;
-      }
-      continue;
-    }
-
-    if (c === '"') {
-      inQuotes = true;
-      continue;
-    }
-
-    if (c === ",") {
-      row.push(field.trim());
-      field = "";
-      continue;
-    }
-
-    if (c === "\n") {
-      row.push(field.trim());
-      field = "";
-      if (row.some((x) => x.length > 0)) rows.push(row);
-      row = [];
-      continue;
-    }
-
-    if (c === "\r") continue;
-    field += c;
-  }
-
-  row.push(field.trim());
-  if (row.some((x) => x.length > 0)) rows.push(row);
-
-  if (rows.length < 1) return [];
-  const headers = rows[0].map((h) => h.trim());
-  return rows.slice(1).map((r) => {
-    const obj: Record<string, string> = {};
-    headers.forEach((h, idx) => (obj[h] = (r[idx] ?? "").trim()));
-    return obj;
-  });
-}
-
-function buildFullCsvTemplate(): string {
-  // We don't have a live schema call here, so provide a "maximal" template
-  // that covers common queue settings and matches your worker’s mapping.
-  // Add/remove columns as you learn Zoom’s full supported fields.
-  return [
-    [
-      "queue_name",
-      "queue_description",
-      "channel_types",
-      "max_wait_time",
-      "wrap_up_time",
-      "max_engagement_in_queue",
-      // placeholders for commonly-needed fields you might support later:
-      "timezone",
-      "business_hours_id",
-      "overflow_queue_id",
-      "routing_profile_id",
-      "skills",
-      "outbound_caller_id",
-      "recording_enabled",
-      "auto_answer",
-      "priority",
-      "custom_json",
-    ].join(","),
-    [
-      "Example Voice Queue",
-      "Created from CSV",
-      "voice",
-      "300",
-      "30",
-      "10",
-      "America/Los_Angeles",
-      "",
-      "",
-      "",
-      "skillA|skillB",
-      "",
-      "true",
-      "false",
-      "1",
-      "{\"notes\":\"put any extra fields here\"}",
-    ].join(","),
-  ].join("\n") + "\n";
 }
 
 function Modal({
@@ -157,7 +188,6 @@ function Modal({
   return (
     <div
       onMouseDown={(e) => {
-        // click outside to close
         if (e.target === e.currentTarget) onClose();
       }}
       style={{
@@ -206,39 +236,26 @@ export default function App() {
   const [queues, setQueues] = useState<Queue[]>([]);
   const [activeTab, setActiveTab] = useState<"list" | "create" | "bulk">("list");
 
-  // Create form
-  const [createPayload, setCreatePayload] = useState(() =>
-    prettyJson({
-      queue_name: "",
-      queue_description: "",
-      channel_types: ["voice"],
-    })
-  );
-  const [createResult, setCreateResult] = useState<string>("");
-
-  // Edit modal
+  // Edit modal state
   const [editing, setEditing] = useState<Queue | null>(null);
-  const [patchPayload, setPatchPayload] = useState<string>("");
+  const [originalQueue, setOriginalQueue] = useState<any>(null);
+  const [editJsonText, setEditJsonText] = useState<string>("");
   const [patchResult, setPatchResult] = useState<string>("");
-  const [sendDiffOnly, setSendDiffOnly] = useState<boolean>(true);
+
+  // PATCH confirm modal
+  const [patchConfirmOpen, setPatchConfirmOpen] = useState(false);
+  const [computedPatch, setComputedPatch] = useState<any>(null);
+  const [editedParsed, setEditedParsed] = useState<any>(null);
+  const [patchBusy, setPatchBusy] = useState(false);
 
   // Delete confirm
-  const [deleteConfirmText, setDeleteConfirmText] = useState<string>("");
-
-  // Bulk CSV
-  const [csvText, setCsvText] = useState<string>("queue_name,queue_description,channel_types\nExample Queue,Created from CSV,voice\n");
-  const [bulkResult, setBulkResult] = useState<string>("");
-
-  // Bulk preview modal
-  const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
-  const [bulkParsed, setBulkParsed] = useState<Record<string, string>[]>([]);
-  const [bulkConfirmBusy, setBulkConfirmBusy] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   async function refresh() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await listQueues({ channel: "voice", page_size: "100" });
+      const res = await listQueues({ channel: "voice", page_size: "200" });
       if (!res?.ok) throw new Error(res?.message || res?.data?.message || "API error");
       const items = res?.data?.queues || res?.data?.data?.queues || res?.data?.queues || [];
       setQueues(items);
@@ -261,65 +278,71 @@ export default function App() {
 
   function openEdit(q: Queue) {
     setEditing(q);
+    setOriginalQueue(q);
+    setEditJsonText(prettyJson(q)); // show full GET payload
     setPatchResult("");
     setDeleteConfirmText("");
-    // Populate with FULL object for quick searching/editing.
-    setPatchPayload(prettyJson(q));
+    setPatchConfirmOpen(false);
+    setComputedPatch(null);
   }
 
-  async function submitCreate() {
-    setCreateResult("");
-    setErr(null);
-    const parsed = safeParseJson(createPayload);
-    if (!parsed.ok) return setErr(parsed.error);
-
-    try {
-      const res = await createQueue(parsed.value);
-      setCreateResult(prettyJson(res));
-      if (res?.ok) {
-        setActiveTab("list");
-        await refresh();
-      }
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-    }
-  }
-
-  async function submitPatch() {
+  function computePatchAndOpenConfirm() {
     if (!editing) return;
-    setPatchResult("");
     setErr(null);
 
-    const parsed = safeParseJson(patchPayload);
-    if (!parsed.ok) return setErr(parsed.error);
+    const parsed = safeParseJson(editJsonText);
+    if (!parsed.ok) {
+      setErr(parsed.error);
+      return;
+    }
 
+    // Strip read-only keys before diff
+    const o = stripReadOnly(originalQueue);
+    const e = stripReadOnly(parsed.value);
+
+    const d = deepDiff(o, e);
+    const patch = d ?? {}; // if undefined => no changes
+    
+    setComputedPatch(patch);
+    setEditedParsed(parsed.value);
+    setPatchConfirmOpen(true);
+  }
+
+  async function confirmPatch() {
+    if (!editing) return;
+    setErr(null);
+    setPatchResult("");
+
+    if (!computedPatch || Object.keys(computedPatch).length === 0) {
+      setErr("No changes detected (diff is empty).");
+      return;
+    }
+
+    setPatchBusy(true);
     try {
       const id = String(editing.queue_id || editing.id);
-      let payloadToSend = parsed.value;
-
-      if (sendDiffOnly) {
-        // Strip read-only keys to avoid common 400s
-        payloadToSend = stripReadOnlyKeys(payloadToSend);
-      }
-
-      const res = await patchQueue(id, payloadToSend);
+      const res = await patchQueue(id, computedPatch);
       setPatchResult(prettyJson(res));
       if (res?.ok) {
+        setPatchConfirmOpen(false);
         setEditing(null);
         await refresh();
       }
     } catch (e: any) {
       setErr(e?.message || String(e));
+    } finally {
+      setPatchBusy(false);
     }
   }
 
-  async function submitDelete() {
+  async function confirmDelete() {
     if (!editing) return;
     setErr(null);
     setPatchResult("");
 
     if (deleteConfirmText.trim().toUpperCase() !== "DELETE") {
-      return setErr('To delete, type DELETE in the confirmation box.');
+      setErr('To delete, type DELETE in the confirmation box.');
+      return;
     }
 
     try {
@@ -335,47 +358,13 @@ export default function App() {
     }
   }
 
-  function openBulkPreview() {
-    setErr(null);
-    try {
-      const rows = parseCsvUi(csvText);
-      setBulkParsed(rows);
-      setBulkPreviewOpen(true);
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-    }
-  }
-
-  async function confirmBulkCreate() {
-    setBulkConfirmBusy(true);
-    setBulkResult("");
-    setErr(null);
-    try {
-      const res = await bulkCreateFromCsv(csvText);
-      setBulkResult(prettyJson(res));
-      if (res?.ok) {
-        setBulkPreviewOpen(false);
-        setActiveTab("list");
-        await refresh();
-      }
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-    } finally {
-      setBulkConfirmBusy(false);
-    }
-  }
-
   return (
     <div style={{ fontFamily: "system-ui", padding: 20, maxWidth: 1200, margin: "0 auto" }}>
       <h1 style={{ margin: 0 }}>Brook Queue Manager</h1>
 
       <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={refresh} disabled={loading}>Refresh</button>
-
         <button onClick={() => setActiveTab("list")} disabled={activeTab === "list"}>Queues</button>
-        <button onClick={() => setActiveTab("create")} disabled={activeTab === "create"}>Create</button>
-        <button onClick={() => setActiveTab("bulk")} disabled={activeTab === "bulk"}>Bulk CSV</button>
-
         {loading && <span>Loading…</span>}
         {err && <span style={{ color: "crimson" }}>{err}</span>}
       </div>
@@ -387,9 +376,9 @@ export default function App() {
           <table cellPadding={8} style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                <th style={{ width: 320 }}>Name</th>
-                <th style={{ width: 280 }}>ID</th>
-                <th style={{ width: 160 }}>Channels</th>
+                <th style={{ width: 360 }}>Name</th>
+                <th style={{ width: 300 }}>ID</th>
+                <th style={{ width: 180 }}>Channels</th>
                 <th style={{ width: 120 }} />
               </tr>
             </thead>
@@ -404,70 +393,8 @@ export default function App() {
                   </td>
                 </tr>
               ))}
-              {!sorted.length && !loading && (
-                <tr>
-                  <td colSpan={4} style={{ opacity: 0.7 }}>No queues returned.</td>
-                </tr>
-              )}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {activeTab === "create" && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>Create Queue</div>
-          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
-            POST payload (JSON). Zoom will validate required fields.
-          </div>
-          <textarea
-            value={createPayload}
-            onChange={(e) => setCreatePayload(e.target.value)}
-            spellCheck={false}
-            style={{ width: "100%", minHeight: 220, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
-          />
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <button onClick={submitCreate}>Create</button>
-          </div>
-
-          {createResult && (
-            <pre style={{ marginTop: 10, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
-              {createResult}
-            </pre>
-          )}
-        </div>
-      )}
-
-      {activeTab === "bulk" && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>Bulk Create from CSV</div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            <button
-              onClick={() => setCsvText(buildFullCsvTemplate())}
-              title="Insert a full template with many optional columns"
-            >
-              Insert full CSV template
-            </button>
-            <button onClick={openBulkPreview}>Preview &amp; Confirm</button>
-          </div>
-
-          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
-            CSV supports whatever your Worker maps. For channel_types use “voice|chat”.
-          </div>
-
-          <textarea
-            value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
-            spellCheck={false}
-            style={{ width: "100%", minHeight: 240, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
-          />
-
-          {bulkResult && (
-            <pre style={{ marginTop: 10, background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
-              {bulkResult}
-            </pre>
-          )}
         </div>
       )}
 
@@ -476,31 +403,25 @@ export default function App() {
         <Modal
           title={`Edit Queue: ${editing.queue_name || editing.name || ""}`}
           onClose={() => setEditing(null)}
+          width={1000}
           footer={
             <>
-              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start" }}>
-                <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={sendDiffOnly}
-                    onChange={(e) => setSendDiffOnly(e.target.checked)}
-                  />
-                  Strip read-only keys before PATCH
-                </label>
-              </div>
-
-              <button onClick={submitPatch} style={{ fontWeight: 700 }}>
-                Save (PATCH)
-              </button>
-
+              <button onClick={() => setEditing(null)}>Cancel</button>
               <button
-                onClick={submitDelete}
+                onClick={computePatchAndOpenConfirm}
+                style={{ fontWeight: 800 }}
+              >
+                Review Diff…
+              </button>
+              <button
+                onClick={confirmDelete}
                 style={{
                   background: "#b00020",
                   color: "white",
                   border: "none",
                   padding: "8px 12px",
                   borderRadius: 8,
+                  marginLeft: 6,
                 }}
                 title="Deletes the queue (danger)"
               >
@@ -515,15 +436,14 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Payload is prefilled with the full queue object from GET so you can search fields quickly.
-              If PATCH rejects fields, keep “Strip read-only keys” enabled.
+              Edit the full object (from GET). We’ll compute a diff and PATCH only the changes.
             </div>
 
             <textarea
-              value={patchPayload}
-              onChange={(e) => setPatchPayload(e.target.value)}
+              value={editJsonText}
+              onChange={(e) => setEditJsonText(e.target.value)}
               spellCheck={false}
-              style={{ width: "100%", minHeight: 320, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+              style={{ width: "100%", minHeight: 360, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
             />
 
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -536,7 +456,7 @@ export default function App() {
                 placeholder="DELETE"
                 style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd" }}
               />
-              <button onClick={() => setPatchPayload("{}")}>Clear editor</button>
+              <button onClick={() => setEditJsonText(prettyJson(originalQueue))}>Reset</button>
             </div>
 
             {patchResult && (
@@ -548,66 +468,68 @@ export default function App() {
         </Modal>
       )}
 
-      {/* Bulk Preview Modal */}
-      {bulkPreviewOpen && (
+      {/* Patch Diff Confirm Modal */}
+      {patchConfirmOpen && editing && (
         <Modal
-          title="Bulk Create Preview"
-          onClose={() => setBulkPreviewOpen(false)}
-          width={1000}
+          title="Confirm PATCH (Diff Preview)"
+          onClose={() => setPatchConfirmOpen(false)}
+          width={900}
           footer={
             <>
-              <button onClick={() => setBulkPreviewOpen(false)}>Cancel</button>
+              <button onClick={() => setPatchConfirmOpen(false)}>Back</button>
               <button
-                onClick={confirmBulkCreate}
-                disabled={bulkConfirmBusy}
+                onClick={confirmPatch}
+                disabled={patchBusy || !computedPatch || Object.keys(computedPatch).length === 0}
                 style={{
                   background: "#0a7a2f",
                   color: "white",
                   border: "none",
                   padding: "8px 12px",
                   borderRadius: 8,
-                  fontWeight: 800,
+                  fontWeight: 900,
+                  opacity: patchBusy ? 0.8 : 1,
                 }}
               >
-                {bulkConfirmBusy ? "Creating…" : "Confirm & Create"}
+                {patchBusy ? "Patching…" : "Confirm PATCH"}
               </button>
             </>
           }
         >
-          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-            Below is what we parsed from your CSV. Confirm to create queues.
-          </div>
-
-          {!bulkParsed.length ? (
-            <div style={{ opacity: 0.8 }}>No rows found.</div>
-          ) : (
-            <table cellPadding={8} style={{ borderCollapse: "collapse", width: "100%" }}>
-              <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                  <th style={{ width: 70 }}>Row</th>
-                  <th>queue_name</th>
-                  <th>channel_types</th>
-                  <th>queue_description</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bulkParsed.slice(0, 200).map((r, idx) => (
-                  <tr key={idx} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                    <td style={{ fontFamily: "monospace" }}>{idx + 1}</td>
-                    <td>{r.queue_name || r.name || <span style={{ color: "crimson" }}>(missing)</span>}</td>
-                    <td style={{ fontFamily: "monospace" }}>{r.channel_types || "voice"}</td>
-                    <td>{r.queue_description || r.description || ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {bulkParsed.length > 200 && (
-            <div style={{ marginTop: 10, opacity: 0.75 }}>
-              Showing first 200 rows of {bulkParsed.length}.
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ opacity: 0.8 }}>
+              <div><b>Queue:</b> {editing.queue_name || editing.name || ""}</div>
+              <div style={{ fontFamily: "monospace" }}><b>ID:</b> {String(editing.queue_id || editing.id)}</div>
             </div>
-          )}
+
+            {!computedPatch || Object.keys(computedPatch).length === 0 ? (
+              <div style={{ color: "crimson" }}>
+                No changes detected. Close this modal and edit something first.
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Changes (git-style diff):
+                </div>
+
+                <DiffBlock
+                    lines={collectDiffLines(
+                      stripReadOnly(originalQueue),
+                      stripReadOnly(editedParsed || {})
+                    
+                  )}
+                />
+
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>
+                  PATCH payload (what will be sent):
+                </div>
+
+                <pre style={{ background: "#f7f7f7", padding: 10, borderRadius: 10, overflow: "auto" }}>
+                  {prettyJson(computedPatch)}
+                </pre>
+              </>
+
+            )}
+          </div>
         </Modal>
       )}
     </div>
