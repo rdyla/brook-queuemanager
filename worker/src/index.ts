@@ -317,6 +317,14 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
+    if (url.pathname.startsWith("/api/")) {
+  return new Response(
+    JSON.stringify({ ok: true, api: true, path: url.pathname }, null, 2),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+}
+
+
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
