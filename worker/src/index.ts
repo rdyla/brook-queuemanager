@@ -315,40 +315,35 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
     }
 
-    try {
-      const url = new URL(req.url);
-
-      // Health
-      if (url.pathname === "/health") {
-        return withCors(req, new Response("OK", { status: 200 }));
-      }
-
-      // API
-      if (url.pathname.startsWith("/api/")) {
-        if (!requireApiKey(req, env)) return withCors(req, unauthorized());
-        return withCors(req, handleApi(req, env));
-      }
-
-      // UI assets
-      return withCors(req, env.ASSETS.fetch(req));
-    } catch (e: any) {
-      return withCors(
-        req,
-        new Response(
-          JSON.stringify({ ok: false, error: "worker_exception", message: e?.message || String(e) }, null, 2),
-          { status: 500, headers: { "content-type": "application/json" } },
-        ),
-      );
+    // Health (should NEVER serve SPA)
+    if (url.pathname === "/health") {
+      return new Response("OK", { status: 200, headers: corsHeaders(req) });
     }
+
+    // API namespace (should NEVER serve SPA)
+    if (url.pathname.startsWith("/api/")) {
+      if (!requireApiKey(req, env)) return unauthorized();
+      const r = await handleApi(req, env);
+      // add CORS to API responses
+      const h = new Headers(r.headers);
+      Object.entries(corsHeaders(req)).forEach(([k, v]) => h.set(k, v));
+      return new Response(r.body, { ...r, headers: h });
+    }
+
+    // Everything else: UI assets (SPA fallback allowed here)
+    const res = await env.ASSETS.fetch(req);
+    const h = new Headers(res.headers);
+    Object.entries(corsHeaders(req)).forEach(([k, v]) => h.set(k, v));
+    return new Response(res.body, { ...res, headers: h });
   },
 };
-
-
 
 function withCors(req: Request, p: Promise<Response> | Response) {
   return Promise.resolve(p).then((res) => {
