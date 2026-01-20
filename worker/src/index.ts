@@ -320,7 +320,7 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-
+    console.log (url.pathname);
     // API always handled here, never by SPA assets
     if (url.pathname.startsWith("/api/")) {
       if (req.method === "OPTIONS") {
@@ -339,6 +339,11 @@ export default {
 
     }
 
+    if (url.pathname === "/" || url.pathname.startsWith("/ui/")) {
+    return withCors(req, env.ASSETS.fetch(req));
+    }
+    return new Response("Not Found", { status: 404 });
+
     // UI assets (SPA fallback allowed here)
     const res = await env.ASSETS.fetch(req);
     const h = new Headers(res.headers);
@@ -354,6 +359,7 @@ function withCors(req: Request, p: Promise<Response> | Response) {
   return Promise.resolve(p).then((res) => {
     const headers = new Headers(res.headers);
     const cors = corsHeaders(req);
+    headers.set("x-bqm-worker", "api");
     Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
     return new Response(res.body, { ...res, headers });
   });
