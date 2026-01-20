@@ -307,11 +307,13 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
     return await handlePatchQueue(req, env, m[1]);
   }
 
-  return new Response(
-    JSON.stringify({ ok: false, error: "api_not_found" }),
-    { status: 404, headers: { "content-type": "application/json" } }
-  );
+  if (url.pathname === "/api/queues/bulk" && req.method === "POST") {
+    return await handleBulkCreate(req, env);
+  }
+
+  return json({ ok: false, error: "api_not_found", path: url.pathname }, { status: 404 });
 }
+
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
