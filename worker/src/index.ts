@@ -290,75 +290,62 @@ async function handleBulkCreate(req: Request, env: Env) {
   );
 }
 
+  async function handleApi(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+
+  if (url.pathname === "/api/queues" && req.method === "GET") {
+    return await handleListQueues(req, env);
+  }
+
+  if (url.pathname === "/api/queues" && req.method === "POST") {
+    return await handleCreateQueue(req, env);
+  }
+
+  const m = url.pathname.match(/^\/api\/queues\/([^/]+)$/);
+  if (m && req.method === "PATCH") {
+    return await handlePatchQueue(req, env, m[1]);
+  }
+
+  return new Response(
+    JSON.stringify({ ok: false, error: "api_not_found" }),
+    { status: 404, headers: { "content-type": "application/json" } }
+  );
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    // CORS preflight
-    if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(req) });
-    }
-    const url = new URL(req.url);
-    const path = url.pathname;
+    try {
+      const url = new URL(req.url);
 
-    function maskPresent(v: unknown) {
-  return v ? "present" : "missing";
-}
+      /* ---------------- HEALTH ---------------- */
+      if (url.pathname === "/health") {
+        return new Response("OK", { status: 200 });
+      }
 
-if (url.pathname === "/debug/env") {
-  return json({
-    ok: true,
-    ZOOM_ACCOUNT_ID: maskPresent(env.ZOOM_ACCOUNT_ID),
-    ZOOM_CLIENT_ID: maskPresent(env.ZOOM_CLIENT_ID),
-    ZOOM_CLIENT_SECRET: maskPresent(env.ZOOM_CLIENT_SECRET),
-  });
-}
+      /* ---------------- API ---------------- */
+      if (url.pathname.startsWith("/api/")) {
+        return await handleApi(req, env); // <-- MUST return here
+      }
 
-
-    // Root page (nice sanity check)
-    if (url.pathname === "/") {
+      /* ---------------- UI (STATIC ASSETS) ---------------- */
+      return await env.ASSETS.fetch(req);
+    } catch (e: any) {
       return new Response(
-        "brook-queuemanager worker is live. Try /health or /api/queues",
-        { headers: { "content-type": "text/plain; charset=utf-8" } },
+        JSON.stringify(
+          {
+            ok: false,
+            error: "worker_exception",
+            message: e?.message || String(e),
+          },
+          null,
+          2
+        ),
+        { status: 500, headers: { "content-type": "application/json" } }
       );
     }
-
-    // Health endpoint (for monitors)
-    if (url.pathname === "/health") {
-      return new Response("ok", { status: 200 });
-    }
-
-    if (!requireApiKey(req, env)) {
-      return new Response(null, { status: 401, headers: corsHeaders(req) });
-    }
-
-
-
-    // Serve a simple health check
-    if (path === "/health") {
-      return new Response("ok", { status: 200, headers: corsHeaders(req) });
-    }
-
-    // API routes
-    if (path === "/api/queues") {
-      if (req.method === "GET") return withCors(req, handleListQueues(req, env));
-      if (req.method === "POST") return withCors(req, handleCreateQueue(req, env));
-      return withCors(req, Promise.resolve(methodNotAllowed()));
-    }
-
-    if (path === "/api/queues/bulk") {
-      if (req.method === "POST") return withCors(req, handleBulkCreate(req, env));
-      return withCors(req, Promise.resolve(methodNotAllowed()));
-    }
-
-    const m = path.match(/^\/api\/queues\/([^/]+)$/);
-    if (m) {
-      const queueId = m[1];
-      if (req.method === "PATCH") return withCors(req, handlePatchQueue(req, env, queueId));
-      return withCors(req, Promise.resolve(methodNotAllowed()));
-    }
-
-    return new Response("Not found", { status: 404, headers: corsHeaders(req) });
   },
 };
+
 
 function withCors(req: Request, p: Promise<Response> | Response) {
   return Promise.resolve(p).then((res) => {
