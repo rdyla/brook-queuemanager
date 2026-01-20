@@ -3,12 +3,6 @@ type = "javascript"
 main = "worker/src/index.ts"
 compatibility_date = "2026-01-01"
 
-[vars]
-ZOOM_ACCOUNT_ID = "HSo9AYLTQ-mxFMUQg3hn7w"
-ZOOM_CLIENT_ID = "pUWJUWf1SlypIAQZ83Gm8A"
-# ZOOM_CLIENT_SECRET = "..."
-# ADMIN_API_KEY = "optional"
-
 [assets]
 directory = "./web/dist"
 binding = "ASSETS"
@@ -17,3 +11,6 @@ not_found_handling = "single-page-application"
 [build]
 command = "cd web && bun install && bun run build"
 
+[vars]
+ZOOM_ACCOUNT_ID = "HSo9AYLTQ-mxFMUQg3hn7w"
+ZOOM_CLIENT_ID = "pUWJUWf1SlypIAQZ83Gm8A"
